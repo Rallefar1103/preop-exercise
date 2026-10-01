@@ -48,7 +48,9 @@ class _RuleSpec:
 _REGISTRY: list[_RuleSpec] = []
 
 
-def rule(*, order: int, requires: frozenset[Field] = frozenset()) -> Callable[[RuleFn], RuleFn]:
+def rule(
+    *, order: int, requires: frozenset[Field] = frozenset()
+) -> Callable[[RuleFn], RuleFn]:
     def decorator(fn: RuleFn) -> RuleFn:
         _REGISTRY.append(_RuleSpec(order=order, requires=requires, fn=fn))
         return fn
@@ -57,11 +59,17 @@ def rule(*, order: int, requires: frozenset[Field] = frozenset()) -> Callable[[R
 
 
 def non_document_specs() -> list[_RuleSpec]:
-    return sorted((spec for spec in _REGISTRY if Field.DOC_ROLES not in spec.requires), key=lambda s: s.order)
+    return sorted(
+        (spec for spec in _REGISTRY if Field.DOC_ROLES not in spec.requires),
+        key=lambda s: s.order,
+    )
 
 
 def document_specs() -> list[_RuleSpec]:
-    return sorted((spec for spec in _REGISTRY if Field.DOC_ROLES in spec.requires), key=lambda s: s.order)
+    return sorted(
+        (spec for spec in _REGISTRY if Field.DOC_ROLES in spec.requires),
+        key=lambda s: s.order,
+    )
 
 
 def run_rules(
@@ -72,6 +80,7 @@ def run_rules(
 ) -> list[Issue]:
     issues: list[Issue] = []
     for spec in specs:
+        # If the rule requires a field that is currently set as unavailable, skip it.
         if spec.requires & unavailable:
             continue
         issues.extend(spec.fn(facts, claims))
@@ -139,7 +148,9 @@ def make_issue(category: str, order: int, citation: cite.Citation) -> Issue:
 # --------------------------------------------------------------------------
 
 
-def _current_hp_candidates(facts: Facts, claims: list[DocClaim]) -> list[tuple[date, DocClaim]]:
+def _current_hp_candidates(
+    facts: Facts, claims: list[DocClaim]
+) -> list[tuple[date, DocClaim]]:
     candidates: list[tuple[date, DocClaim]] = []
     for claim in claims:
         if claim.role is not DocRole.HISTORY_AND_PHYSICAL or not claim.is_current:
@@ -172,7 +183,11 @@ def rule_hp_window(facts: Facts, claims: list[DocClaim]) -> list[Issue]:
 
     source = facts.documents[claim.index].path
     citation = cite.hp_outside_window(
-        source=source, hp_date=hp_date, proc_date=facts.proc_date, delta=delta, window=WINDOW_HP_DAYS
+        source=source,
+        hp_date=hp_date,
+        proc_date=facts.proc_date,
+        delta=delta,
+        window=WINDOW_HP_DAYS,
     )
     return [make_issue(CATEGORY_REQUIRED_DOCUMENTATION, ORDER_HP, citation)]
 
@@ -184,13 +199,20 @@ def rule_hp_window(facts: Facts, claims: list[DocClaim]) -> list[Issue]:
 
 @rule(order=ORDER_CONSENT, requires=frozenset({Field.DOC_ROLES}))
 def rule_consent(facts: Facts, claims: list[DocClaim]) -> list[Issue]:
-    consent_claims = [claim for claim in claims if claim.role is DocRole.SURGICAL_CONSENT]
+    consent_claims = [
+        claim for claim in claims if claim.role is DocRole.SURGICAL_CONSENT
+    ]
     if not consent_claims:
-        return [make_issue(CATEGORY_REQUIRED_DOCUMENTATION, ORDER_CONSENT, cite.consent_missing())]
+        return [
+            make_issue(
+                CATEGORY_REQUIRED_DOCUMENTATION, ORDER_CONSENT, cite.consent_missing()
+            )
+        ]
 
     claim = max(
         consent_claims,
-        key=lambda c: parse_item_date(facts.documents[c.index].obj.get("date")) or date.min,
+        key=lambda c: parse_item_date(facts.documents[c.index].obj.get("date"))
+        or date.min,
     )
     if claim.consent_signed is ConsentStatus.SIGNED:
         return []
@@ -226,7 +248,9 @@ def _lab_missing_issue(facts: Facts, *, code: str, order: int) -> list[Issue]:
     return [make_issue(CATEGORY_REQUIRED_TESTING, order, citation)]
 
 
-def _lab_window_issue(facts: Facts, *, code: str, window: int, order: int) -> list[Issue]:
+def _lab_window_issue(
+    facts: Facts, *, code: str, window: int, order: int
+) -> list[Issue]:
     ref = facts.latest_lab.get(code)
     if ref is None:
         return []  # no result to check the window against; the existence rule already reported it
@@ -255,7 +279,11 @@ def rule_cbc_exists(facts: Facts, claims: list[DocClaim]) -> list[Issue]:
 
 @rule(order=ORDER_CBC, requires=frozenset({Field.PROC_DATE, Field.PROC_RISK}))
 def rule_cbc_window(facts: Facts, claims: list[DocClaim]) -> list[Issue]:
-    window = WINDOW_HIGH_RISK_LAB_DAYS if facts.risk == "HIGH" else WINDOW_LOW_MODERATE_LAB_DAYS
+    window = (
+        WINDOW_HIGH_RISK_LAB_DAYS
+        if facts.risk == "HIGH"
+        else WINDOW_LOW_MODERATE_LAB_DAYS
+    )
     return _lab_window_issue(facts, code="CBC", window=window, order=ORDER_CBC)
 
 
@@ -270,7 +298,9 @@ def rule_cmp_exists(facts: Facts, claims: list[DocClaim]) -> list[Issue]:
 def rule_cmp_window(facts: Facts, claims: list[DocClaim]) -> list[Issue]:
     if facts.risk != "HIGH":
         return []
-    return _lab_window_issue(facts, code="CMP", window=WINDOW_HIGH_RISK_LAB_DAYS, order=ORDER_CMP)
+    return _lab_window_issue(
+        facts, code="CMP", window=WINDOW_HIGH_RISK_LAB_DAYS, order=ORDER_CMP
+    )
 
 
 # --------------------------------------------------------------------------
@@ -288,7 +318,10 @@ def _clear_plan_exists(claims: list[DocClaim]) -> bool:
 
 def _plan_doc_source(facts: Facts, claims: list[DocClaim]) -> str | None:
     candidates = [
-        (parse_item_date(facts.documents[claim.index].obj.get("date")) or date.min, claim)
+        (
+            parse_item_date(facts.documents[claim.index].obj.get("date")) or date.min,
+            claim,
+        )
         for claim in claims
         if claim.role is DocRole.PERIOP_ANTICOAG_PLAN
     ]
@@ -329,7 +362,9 @@ def rule_safety_bp(facts: Facts, claims: list[DocClaim]) -> list[Issue]:
     diastolic = facts.latest_bp.obj["diastolic"]
     if systolic < BP_SYSTOLIC_THRESHOLD and diastolic < BP_DIASTOLIC_THRESHOLD:
         return []
-    citation = cite.bp_exclusion(source=facts.latest_bp.path, systolic=systolic, diastolic=diastolic)
+    citation = cite.bp_exclusion(
+        source=facts.latest_bp.path, systolic=systolic, diastolic=diastolic
+    )
     return [make_issue(CATEGORY_ACUTE_SAFETY_EXCLUSION, ORDER_SAFETY_BP, citation)]
 
 
