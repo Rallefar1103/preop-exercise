@@ -44,7 +44,11 @@ class ProcedureInfo(BaseModel):
 
     case_id: str | None = None
     procedure_type: str | None = None
-    procedure_risk: ProcedureRisk | None = None
+    # Deliberately a plain string, not ``ProcedureRisk``: the pipeline
+    # normalizes case ("high" -> "HIGH") and reports an unrecognized value as
+    # MISSING_REQUIRED_DATA. A Literal here would instead raise a
+    # ValidationError and crash the whole triage call for one bad field.
+    procedure_risk: str | None = None
     procedure_date: str | None = None
     is_elective: bool | None = None
     location: str | None = None

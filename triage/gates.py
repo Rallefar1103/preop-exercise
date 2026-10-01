@@ -13,6 +13,15 @@ reading -- but its required numeric field(s) are null. Both shapes mark the
 same ``Field`` unavailable, so ``rule_safety_bp``/``rule_safety_temp`` (which
 ``requires`` that field) are skipped either way instead of silently no-oping
 into a false READY.
+
+A third shape: the value is present but implausible (e.g. a Celsius
+temperature entered as ``value_f``, which would otherwise pass the > 100.4 F
+check). It is reported and gated the same way, because a threshold check on
+a value we don't believe is not a safety check.
+
+Procedure date and risk distinguish "null" from "present but unusable"
+(unparseable date, unrecognized risk) in the issue text; both mark the field
+unavailable.
 """
 
 from __future__ import annotations
@@ -31,6 +40,19 @@ from .rules import (
 )
 
 
+# Physiologically plausible ranges. Values outside them are almost always an
+# entry or unit error, not a real reading. Deliberately wide: the goal is to
+# catch a wrong unit or a typo, not to second-guess a real extreme reading.
+BP_SYSTOLIC_PLAUSIBLE = (40, 300)
+BP_DIASTOLIC_PLAUSIBLE = (20, 200)
+TEMP_F_PLAUSIBLE = (90.0, 110.0)
+
+
+def _in_range(value: float, bounds: tuple[float, float]) -> bool:
+    low, high = bounds
+    return low <= value <= high
+
+
 def _bp_has_values(obj: dict[str, object]) -> bool:
     systolic = obj.get("systolic")
     diastolic = obj.get("diastolic")
@@ -41,16 +63,30 @@ def _temp_has_value(obj: dict[str, object]) -> bool:
     return isinstance(obj.get("value_f"), (int, float))
 
 
+def _is_blank(value: object) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
 def gates(facts: Facts) -> tuple[list[Issue], frozenset[Field]]:
     issues: list[Issue] = []
     unavailable: set[Field] = set()
 
     if facts.proc_date is None:
-        issues.append(make_issue(CATEGORY_MISSING_REQUIRED_DATA, ORDER_MISSING_PROC_DATE, cite.missing_procedure_date()))
+        citation = (
+            cite.missing_procedure_date()
+            if _is_blank(facts.proc_date_raw)
+            else cite.unparseable_procedure_date(raw=facts.proc_date_raw)
+        )
+        issues.append(make_issue(CATEGORY_MISSING_REQUIRED_DATA, ORDER_MISSING_PROC_DATE, citation))
         unavailable.add(Field.PROC_DATE)
 
     if facts.risk is None:
-        issues.append(make_issue(CATEGORY_MISSING_REQUIRED_DATA, ORDER_MISSING_PROC_RISK, cite.missing_procedure_risk()))
+        citation = (
+            cite.missing_procedure_risk()
+            if _is_blank(facts.risk_raw)
+            else cite.unrecognized_procedure_risk(raw=facts.risk_raw)
+        )
+        issues.append(make_issue(CATEGORY_MISSING_REQUIRED_DATA, ORDER_MISSING_PROC_RISK, citation))
         unavailable.add(Field.PROC_RISK)
 
     if facts.latest_bp is None:
@@ -65,12 +101,29 @@ def gates(facts: Facts) -> tuple[list[Issue], frozenset[Field]]:
         citation = cite.missing_latest_bp_values(source=facts.latest_bp.path)
         issues.append(make_issue(CATEGORY_MISSING_REQUIRED_DATA, ORDER_MISSING_BP, citation))
         unavailable.add(Field.BP)
+    elif not (
+        _in_range(facts.latest_bp.obj["systolic"], BP_SYSTOLIC_PLAUSIBLE)
+        and _in_range(facts.latest_bp.obj["diastolic"], BP_DIASTOLIC_PLAUSIBLE)
+    ):
+        citation = cite.implausible_latest_bp(
+            source=facts.latest_bp.path,
+            systolic=facts.latest_bp.obj["systolic"],
+            diastolic=facts.latest_bp.obj["diastolic"],
+        )
+        issues.append(make_issue(CATEGORY_MISSING_REQUIRED_DATA, ORDER_MISSING_BP, citation))
+        unavailable.add(Field.BP)
 
     if facts.latest_temp is None:
         issues.append(make_issue(CATEGORY_MISSING_REQUIRED_DATA, ORDER_MISSING_TEMP, cite.missing_latest_temp()))
         unavailable.add(Field.TEMP)
     elif not _temp_has_value(facts.latest_temp.obj):
         citation = cite.missing_latest_temp_values(source=facts.latest_temp.path)
+        issues.append(make_issue(CATEGORY_MISSING_REQUIRED_DATA, ORDER_MISSING_TEMP, citation))
+        unavailable.add(Field.TEMP)
+    elif not _in_range(facts.latest_temp.obj["value_f"], TEMP_F_PLAUSIBLE):
+        citation = cite.implausible_latest_temp(
+            source=facts.latest_temp.path, value_f=facts.latest_temp.obj["value_f"]
+        )
         issues.append(make_issue(CATEGORY_MISSING_REQUIRED_DATA, ORDER_MISSING_TEMP, citation))
         unavailable.add(Field.TEMP)
 

@@ -167,6 +167,15 @@ def _current_hp_candidates(
 def rule_hp_exists(facts: Facts, claims: list[DocClaim]) -> list[Issue]:
     if _current_hp_candidates(facts, claims):
         return []
+    # A current H&P exists but its date can't be parsed: say that, rather than
+    # "H&P missing", so the coordinator fixes the date instead of re-requesting
+    # a document that is already on file. Same category, so the decision and
+    # the category set are unchanged.
+    for claim in claims:
+        if claim.role is DocRole.HISTORY_AND_PHYSICAL and claim.is_current:
+            doc = facts.documents[claim.index]
+            citation = cite.hp_date_unparseable(source=doc.path, raw=doc.obj.get("date"))
+            return [make_issue(CATEGORY_REQUIRED_DOCUMENTATION, ORDER_HP, citation)]
     return [make_issue(CATEGORY_REQUIRED_DOCUMENTATION, ORDER_HP, cite.hp_missing())]
 
 
@@ -244,7 +253,10 @@ def rule_consent(facts: Facts, claims: list[DocClaim]) -> list[Issue]:
 def _lab_missing_issue(facts: Facts, *, code: str, order: int) -> list[Issue]:
     if facts.latest_lab.get(code) is not None:
         return []
-    citation = cite.lab_missing(code=code, risk=facts.risk)
+    excluded = [
+        (ref.path, str(ref.obj.get("status"))) for ref in facts.excluded_labs.get(code, [])
+    ]
+    citation = cite.lab_missing(code=code, risk=facts.risk, excluded=excluded)
     return [make_issue(CATEGORY_REQUIRED_TESTING, order, citation)]
 
 

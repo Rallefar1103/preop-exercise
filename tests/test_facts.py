@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from triage.facts import Field, canonical_lab_code, normalize, parse_item_date
+from triage.facts import Field, anticoagulant_generic, canonical_lab_code, normalize, parse_item_date
 from triage.rules import rule_cbc_window
 
 
@@ -192,3 +192,73 @@ def test_documents_are_kept_in_order_with_provenance_paths() -> None:
 
 def test_field_enum_members_match_the_plan() -> None:
     assert {f.value for f in Field} == {"proc_date", "proc_risk", "bp", "temp", "doc_roles"}
+
+
+def test_parse_item_date_converts_offset_datetimes_to_utc_before_taking_the_date() -> None:
+    # 20:00 at -08:00 is 04:00 the next day in UTC.
+    assert parse_item_date("2026-02-11T20:00:00-08:00") == date(2026, 2, 12)
+    assert parse_item_date("2026-02-11T20:00:00Z") == date(2026, 2, 11)
+    assert parse_item_date("2026-02-11T20:00:00") == date(2026, 2, 11)  # naive: taken as UTC
+    assert parse_item_date("2026-02-11Tgarbage") is None
+
+
+def test_anticoagulant_lookup_resolves_brands_doses_and_salts() -> None:
+    assert anticoagulant_generic("apixaban") == "apixaban"
+    assert anticoagulant_generic("Eliquis") == "apixaban"
+    assert anticoagulant_generic("apixaban 5mg") == "apixaban"
+    assert anticoagulant_generic("Xarelto 20 mg") == "rivaroxaban"
+    assert anticoagulant_generic("warfarin sodium") == "warfarin"
+    assert anticoagulant_generic("Lovenox") == "enoxaparin"
+
+
+def test_anticoagulant_lookup_ignores_distractors_and_antiplatelets() -> None:
+    assert anticoagulant_generic("lisinopril") is None
+    assert anticoagulant_generic("metformin") is None
+    assert anticoagulant_generic("clopidogrel") is None
+    assert anticoagulant_generic("aspirin 81mg") is None
+    assert anticoagulant_generic(None) is None
+
+
+def test_brand_name_anticoagulant_is_tracked_with_its_status() -> None:
+    facts = normalize(_submission(medications=[{"name": "Eliquis 5 mg", "active": True}]))
+    assert [(ref.path, status) for ref, status in facts.anticoags] == [("medications[0]", "active")]
+
+
+def test_procedure_risk_is_case_normalized_and_unknown_values_become_none() -> None:
+    assert normalize(_submission(procedure={"procedure_date": "2026-03-11", "procedure_risk": " high "})).risk == "HIGH"
+    facts = normalize(_submission(procedure={"procedure_date": "2026-03-11", "procedure_risk": "URGENT"}))
+    assert facts.risk is None
+    assert facts.risk_raw == "URGENT"
+
+
+def test_vital_type_aliases_are_recognized() -> None:
+    facts = normalize(
+        _submission(
+            vitals=[
+                {"type": "BP", "systolic": 210, "diastolic": 125, "date": "2026-03-01"},
+                {"type": "Body Temperature", "value_f": 99.0, "date": "2026-03-01"},
+            ]
+        )
+    )
+    assert facts.latest_bp is not None and facts.latest_bp.path == "vitals[0]"
+    assert facts.latest_temp is not None and facts.latest_temp.path == "vitals[1]"
+
+
+def test_non_final_labs_are_excluded_before_most_recent_reduction() -> None:
+    # A newer cancelled CBC must not shadow the older final one -- a cancelled
+    # order is not a result, so it can't be "the most recent result".
+    facts = normalize(
+        _submission(
+            labs=[
+                {"code": "CBC", "effective_at": "2026-03-09", "status": "cancelled"},
+                {"code": "CBC", "effective_at": "2026-03-05", "status": "final"},
+            ]
+        )
+    )
+    assert facts.latest_lab["CBC"].path == "labs[1]"
+    assert [ref.path for ref in facts.excluded_labs["CBC"]] == ["labs[0]"]
+
+
+def test_lab_without_a_status_field_is_accepted() -> None:
+    facts = normalize(_submission(labs=[{"code": "CBC", "effective_at": "2026-03-05"}]))
+    assert facts.latest_lab["CBC"].path == "labs[0]"

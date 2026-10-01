@@ -117,3 +117,13 @@ def test_triage_submission_rejects_a_pipeline_result_outside_the_schema(
 
     with pytest.raises(ValidationError):
         triage_submission(clean_submission_payload, model="test-model")
+
+
+def test_core_accepts_lowercase_and_unrecognized_risk_without_raising() -> None:
+    # procedure_risk is validated by the pipeline (which reports it), not by
+    # the input schema (which would crash the whole call).
+    from core import PatientSubmission
+
+    for raw in ("high", "URGENT"):
+        submission = PatientSubmission.model_validate({"procedure": {"procedure_risk": raw}})
+        assert submission.procedure is not None and submission.procedure.procedure_risk == raw

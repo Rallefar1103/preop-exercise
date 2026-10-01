@@ -44,6 +44,25 @@ def missing_procedure_risk() -> Citation:
     )
 
 
+def unparseable_procedure_date(*, raw: object) -> Citation:
+    # Same category as a null date (the rule can't be evaluated either way),
+    # but a different description so the coordinator fixes the format rather
+    # than hunting for a date that is already there.
+    return Citation(
+        description="Unparseable procedure date",
+        source="procedure.procedure_date",
+        details=f"procedure.procedure_date is {raw!r}; expected an ISO date (YYYY-MM-DD)",
+    )
+
+
+def unrecognized_procedure_risk(*, raw: object) -> Citation:
+    return Citation(
+        description="Unrecognized procedure risk",
+        source="procedure.procedure_risk",
+        details=f"procedure.procedure_risk is {raw!r}; expected LOW, MODERATE or HIGH",
+    )
+
+
 def missing_latest_bp() -> Citation:
     return Citation(
         description="Missing latest blood pressure",
@@ -65,6 +84,17 @@ def missing_latest_bp_values(*, source: str) -> Citation:
     )
 
 
+def implausible_latest_bp(*, source: str, systolic: object, diastolic: object) -> Citation:
+    return Citation(
+        description="Implausible latest blood pressure",
+        source=source,
+        details=(
+            f"Latest blood_pressure vital ({source}) has systolic={systolic}, "
+            f"diastolic={diastolic}, outside the plausible range; check for an entry error"
+        ),
+    )
+
+
 def missing_latest_temp() -> Citation:
     return Citation(
         description="Missing latest temperature",
@@ -78,6 +108,17 @@ def missing_latest_temp_values(*, source: str) -> Citation:
         description="Missing latest temperature",
         source=source,
         details=f"Latest temperature vital ({source}) has null value_f",
+    )
+
+
+def implausible_latest_temp(*, source: str, value_f: object) -> Citation:
+    return Citation(
+        description="Implausible latest temperature",
+        source=source,
+        details=(
+            f"Latest temperature vital ({source}) has value_f={value_f}, outside the "
+            "plausible Fahrenheit range; check units (a Celsius value reads as hypothermic)"
+        ),
     )
 
 
@@ -115,6 +156,14 @@ def hp_missing() -> Citation:
     )
 
 
+def hp_date_unparseable(*, source: str, raw: object) -> Citation:
+    return Citation(
+        description="History and Physical date missing or unparseable",
+        source=source,
+        details=f"Current H&P ({source}) has date {raw!r}; expected an ISO date (YYYY-MM-DD)",
+    )
+
+
 def hp_outside_window(
     *, source: str, hp_date: date, proc_date: date, delta: int, window: int
 ) -> Citation:
@@ -149,15 +198,19 @@ def consent_not_signed(*, source: str, text: str) -> Citation:
 # --------------------------------------------------------------------------
 
 
-def lab_missing(*, code: str, risk: str | None) -> Citation:
+def lab_missing(
+    *, code: str, risk: str | None, excluded: list[tuple[str, str]] | None = None
+) -> Citation:
     # CBC's existence check runs even when procedure_risk is unknown (it's
     # required at every tier), so this needs a null-safe wording too.
     condition = f"for procedure_risk {risk}" if risk is not None else "(procedure_risk unknown)"
-    return Citation(
-        description=f"{code} missing",
-        source="labs",
-        details=f"No {code} result with valid effective_at found {condition}",
-    )
+    details = f"No {code} result with valid effective_at found {condition}"
+    if excluded:
+        # A result exists but isn't a completed test (e.g. cancelled). Say so,
+        # so the coordinator chases a re-draw rather than a missing record.
+        listed = ", ".join(f"{path} status={status!r}" for path, status in excluded)
+        details = f"No final {code} result found {condition}; excluded by status: {listed}"
+    return Citation(description=f"{code} missing", source="labs", details=details)
 
 
 def lab_outside_window(

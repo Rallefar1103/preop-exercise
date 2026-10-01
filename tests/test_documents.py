@@ -246,3 +246,61 @@ def test_validate_keeps_a_claim_with_a_verbatim_excerpt_at_a_valid_index() -> No
         excerpt="pre-op evaluation",
     )
     assert validate([claim], DOCS) == [claim]
+
+
+def _claim(**overrides: object) -> DocClaim:
+    base: dict[str, object] = dict(
+        index=0,
+        role=DocRole.SURGICAL_CONSENT,
+        is_current=None,
+        consent_signed=ConsentStatus.SIGNED,
+        is_clear_plan=None,
+        excerpt="signed consent",
+    )
+    base.update(overrides)
+    return DocClaim(**base)  # type: ignore[arg-type]
+
+
+def test_validate_tolerates_whitespace_differences_in_the_excerpt() -> None:
+    docs = [{**DOCS[0], "text": "Signed  consent scanned\nand verified."}]
+    claim = _claim(excerpt="Signed consent scanned and verified.")
+    assert validate([claim], docs) == [claim]
+
+
+def test_validate_still_requires_the_same_words() -> None:
+    docs = [{**DOCS[0], "text": "Signed consent scanned and verified."}]
+    assert validate([_claim(excerpt="Signed consent was scanned")], docs) == []
+
+
+def test_validate_downgrades_signed_consent_when_the_text_negates_it() -> None:
+    # The excerpt is verbatim ("signed consent" is inside "NOT signed consent"),
+    # so the anti-hallucination check alone would keep a wrong SIGNED claim.
+    docs = [{**DOCS[0], "text": "Consent form prepared; patient has NOT signed consent yet."}]
+    [validated] = validate([_claim()], docs)
+    assert validated.consent_signed is ConsentStatus.UNCLEAR
+
+
+def test_validate_keeps_a_signed_consent_with_no_contradicting_language() -> None:
+    docs = [{**DOCS[0], "text": "Patient reviewed risks/benefits and signed consent."}]
+    [validated] = validate([_claim()], docs)
+    assert validated.consent_signed is ConsentStatus.SIGNED
+
+
+def test_validate_downgrades_clear_plan_when_the_text_says_it_is_pending() -> None:
+    docs = [{**DOCS[0], "text": "Hold apixaban 48h pre-op; resume plan pending cardiology review."}]
+    claim = _claim(role=DocRole.PERIOP_ANTICOAG_PLAN, consent_signed=None, is_clear_plan=True, excerpt="Hold apixaban 48h pre-op")
+    [validated] = validate([claim], docs)
+    assert validated.is_clear_plan is False
+
+
+def test_validate_keeps_a_clear_plan_with_hold_and_resume_instructions() -> None:
+    docs = [{**DOCS[0], "text": "Hold apixaban 48 hours before surgery; resume 24 hours after if hemostasis is adequate."}]
+    claim = _claim(role=DocRole.PERIOP_ANTICOAG_PLAN, consent_signed=None, is_clear_plan=True, excerpt="Hold apixaban 48 hours before surgery")
+    [validated] = validate([claim], docs)
+    assert validated.is_clear_plan is True
+
+
+def test_validate_never_upgrades_a_negative_claim() -> None:
+    docs = [{**DOCS[0], "text": "Signed consent scanned and verified."}]
+    [validated] = validate([_claim(consent_signed=ConsentStatus.UNSIGNED, excerpt="Signed consent scanned")], docs)
+    assert validated.consent_signed is ConsentStatus.UNSIGNED

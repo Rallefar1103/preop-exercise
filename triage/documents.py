@@ -13,7 +13,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+import re
+import unicodedata
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -174,14 +176,62 @@ def _parse_claims(payload: dict[str, object]) -> list[DocClaim]:
     return [claim for claim in claims if claim is not None]
 
 
+def _normalize_text(text: str) -> str:
+    """Unicode-normalize and collapse whitespace, so an excerpt the model
+    copied with a line break or double space normalized away (common with
+    OCR'd scans) still counts as verbatim. Case and wording must still match."""
+
+    return " ".join(unicodedata.normalize("NFKC", text).split())
+
+
+# Phrases that contradict a positive claim. A verbatim excerpt only proves the
+# quote exists -- "signed consent" is a substring of "NOT signed consent" -- so
+# positive claims (the direction that can produce a false READY) are also
+# checked against the whole document text. A hit downgrades the claim; it never
+# upgrades one. These are generic negation/deferral patterns, not phrases
+# copied from the labeled data.
+_CONSENT_CONTRADICTIONS = re.compile(
+    r"\bunsigned\b"
+    r"|\bnot\s+(?:yet\s+)?(?:been\s+)?signed\b"
+    r"|\bawaiting\b[^.;]*\bsignature\b"
+    r"|\bsignature\s+(?:is\s+)?(?:not|pending|missing|outstanding|required|needed)\b"
+    r"|\bpending\s+signature\b"
+    r"|\brefused\s+to\s+sign\b",
+    re.IGNORECASE,
+)
+_PLAN_CONTRADICTIONS = re.compile(
+    r"\bpending\b"
+    r"|\bnot\s+yet\b"
+    r"|\bto\s+be\s+(?:finalized|determined|confirmed|decided)\b"
+    r"|\bno\s+(?:clear\s+)?(?:plan|hold|guidance|instructions)\b"
+    r"|\bawaiting\b"
+    r"|\bdefer(?:s|red)?\s+to\b",
+    re.IGNORECASE,
+)
+
+
+def _guard_positive_claim(claim: DocClaim, text: str) -> DocClaim:
+    if claim.consent_signed is ConsentStatus.SIGNED and _CONSENT_CONTRADICTIONS.search(text):
+        logger.warning("Downgraded SIGNED consent claim on documents[%d]: text contradicts it", claim.index)
+        return replace(claim, consent_signed=ConsentStatus.UNCLEAR)
+    if claim.is_clear_plan is True and _PLAN_CONTRADICTIONS.search(text):
+        logger.warning("Downgraded clear-plan claim on documents[%d]: text contradicts it", claim.index)
+        return replace(claim, is_clear_plan=False)
+    return claim
+
+
 def validate(
     claims: list[DocClaim], raw_docs: list[dict[str, object]]
 ) -> list[DocClaim]:
     """Anti-hallucination gate: drop any claim pointing at an index that does not
     exist, whose excerpt is empty, or whose excerpt is not verbatim in that
-    document's text. An empty excerpt is never proof of anything -- every
-    string trivially "contains" "", so it must be rejected explicitly rather
-    than relying on the verbatim check alone."""
+    document's text (after whitespace/Unicode normalization). An empty excerpt
+    is never proof of anything -- every string trivially "contains" "", so it
+    must be rejected explicitly rather than relying on the verbatim check alone.
+
+    Surviving positive claims (consent SIGNED, a clear anticoag plan) are then
+    checked against the document text for contradicting language and
+    downgraded to UNCLEAR / not-clear if any is found."""
 
     validated: list[DocClaim] = []
     for claim in claims:
@@ -191,9 +241,9 @@ def validate(
             continue
         doc = raw_docs[claim.index]
         text = doc.get("text") if isinstance(doc, dict) else None
-        if not isinstance(text, str) or claim.excerpt not in text:
+        if not isinstance(text, str) or _normalize_text(claim.excerpt) not in _normalize_text(text):
             continue
-        validated.append(claim)
+        validated.append(_guard_positive_claim(claim, text))
     return validated
 
 
